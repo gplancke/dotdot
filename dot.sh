@@ -6,6 +6,15 @@ DELIM="|"
 DOTFILE_LOCATION="$HOME/.dotdot"
 STORAGE_LOCATION="$HERE"
 
+function read_pwd {
+	stty -echo
+	printf "Password: "
+	read PASSWORD
+	stty echo
+	printf "\n"
+
+	echo $PASSWORD
+}
 function write_dotfile_location {
 	echo "$1" > "$DOTFILE_LOCATION"
 }
@@ -15,6 +24,82 @@ function read_dotfile_location {
 function expand_read_line {
 	echo "$(eval echo $1)"
 }
+
+#############################################
+# This function is used to encrypt/decrypt
+# the secrets directory using a local .pass file
+#############################################
+
+function vault {
+	local dir="$1"
+	local op="$2"
+	local pwd="$3"
+
+	if [ "$op" = "encrypt" ]; then
+		hash openssl 2>/dev/null
+		hasOpenSSL=$?
+
+		# macos ships with libressl and brew does not want to override it
+		# so we force adding openssl to the PATH during the execution of this script
+		[ -d /usr/local/opt/openssl@1.1/bin ] \
+			&& PATH="/usr/local/opt/openssl@1.1/bin:$PATH"
+
+		if [ -z "$pwd" ]; then
+			pwd=$(read_pwd)
+		fi
+
+		if [ -d "${dir}/.secrets" ] \
+			&& [ "$hasOpenSSL" -eq "0" ] \
+			&& [ -n "${pwd}" ]; then
+
+			echo "Encrypting secrets"
+
+			(cd "$dir" \
+				&& tar cvz ./.secrets \
+				| openssl enc -pbkdf2 -salt -pass file:./.pass > .secrets.tar.gz.dat \
+				&& rm -rf ./.secrets)
+		fi
+
+	elif [ "$op" = "decrypt" ]; then
+		hash openssl 2>/dev/null
+		hasOpenSSL=$?
+
+		# macos ships with libressl and brew does not want to override it
+		# so we force adding openssl to the PATH during the execution of this script
+		[ -d /usr/local/opt/openssl@1.1/bin ] \
+			&& PATH="/usr/local/opt/openssl@1.1/bin:$PATH"
+
+		if [ -z "$pwd" ]; then
+			pwd=$(read_pwd)
+		fi
+
+		if [ -f "${dir}/.secrets.tar.gz.dat" ] \
+			&& [ "$hasOpenSSL" -eq "0" ] \
+			&& [ -n "${pwd}" ]; then
+
+			echo "Decrypting secrets"
+
+			(cd "$dir" \
+				&& echo "$(pwd)" \
+				&& openssl enc -pbkdf2 -d -pass file:./.pass -in ./.secrets.tar.gz.dat \
+				| tar xvzf - && rm -rf ./.secrets.tar.gz.dat)
+		fi
+	elif [ "$op" = "ignore" ]; then
+			hash git 2>/dev/null
+			hasGit=$?
+
+			if [ "$hasGit" -eq "0" ] \
+			 && [ -f "${dir}/.secrets.tar.gz.dat" ]; then
+				git checkout "$dir/.secrets.tar.gz.dat"
+			fi
+	else
+		echo "Unknown operation"
+	fi
+}
+
+#############################################
+# This function to register a dotfile
+#############################################
 
 function register {
 	# First we check if we have info about where to store the registered files
@@ -62,10 +147,15 @@ function register {
 	fi
 }
 
+#############################################
+# This function restore the registered files
+#############################################
+
 function link_registered {
-	STORAGE_LOCATION=$(read_dotfile_location)
-	REGISTER="$STORAGE_LOCATION/register.txt"
-	STORE="$STORAGE_LOCATION/files"
+	local pwd="$1"
+	local STORAGE_LOCATION=$(read_dotfile_location)
+	local REGISTER="$STORAGE_LOCATION/register.txt"
+	local STORE="$STORAGE_LOCATION/files"
 
 	if [ ! -f "$REGISTER" ]; then
 		echo "No register file found"
@@ -91,7 +181,28 @@ function link_registered {
 			cp -r "$src" "$target"
 		fi
 	done < "$REGISTER"
+
+	# Install secrets
+	if [ -z "$pwd" ]; then
+		pwd=$(read_pwd)
+	fi
+  vault $STORAGE_LOCATION decrypt "$pwd"
+
+	echo "Installing SSH Keys"
+  if [ -d "${STORAGE_LOCATION}/.secrets/ssh_keys" ]; then
+    [ ! -d "$HOME/.ssh" ] && \
+			mkdir -p $HOME/.ssh && \
+			chmod 0750 $HOME/.ssh
+    cp $STORAGE_LOCATION/.secrets/ssh_keys/* $HOME/.ssh/
+  fi
+
+  vault $STORAGE_LOCATION encrypt "$pwd"
+  vault $STORAGE_LOCATION ignore
 }
+
+#############################################
+# This function to save the registered files
+#############################################
 
 function save_registered {
 	STORAGE_LOCATION=$(read_dotfile_location)
@@ -145,7 +256,7 @@ case $operation in
     register $options
     ;;
   link)
-    link_registered
+    link_registered $options
     ;;
   save)
     save_registered
