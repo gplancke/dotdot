@@ -7,13 +7,19 @@ DOTFILE_LOCATION="$HOME/.dotdot"
 STORAGE_LOCATION="$HERE"
 
 function read_pwd {
-	stty -echo
-	printf "Password: "
-	read PASSWORD
-	stty echo
-	printf "\n"
+	maybePwd="$1"
 
-	echo $PASSWORD
+	if [ -n "$maybePwd" ]; then
+		echo "$maybePwd"
+	else
+		stty -echo
+		printf "Password: "
+		read PASSWORD
+		stty echo
+		printf "\n"
+
+		echo $PASSWORD
+	fi
 }
 function write_dotfile_location {
 	echo "$1" > "$DOTFILE_LOCATION"
@@ -33,9 +39,10 @@ function expand_read_line {
 function vault {
 	local dir="$1"
 	local op="$2"
-	local pwd="$3"
 
 	if [ "$op" = "encrypt" ]; then
+		local pwd=$(read_pwd $3)
+
 		hash openssl 2>/dev/null
 		hasOpenSSL=$?
 
@@ -43,10 +50,6 @@ function vault {
 		# so we force adding openssl to the PATH during the execution of this script
 		[ -d /usr/local/opt/openssl@1.1/bin ] \
 			&& PATH="/usr/local/opt/openssl@1.1/bin:$PATH"
-
-		if [ -z "$pwd" ]; then
-			pwd=$(read_pwd)
-		fi
 
 		if [ -d "${dir}/.secrets" ] \
 			&& [ "$hasOpenSSL" -eq "0" ] \
@@ -61,6 +64,8 @@ function vault {
 		fi
 
 	elif [ "$op" = "decrypt" ]; then
+		local pwd=$(read_pwd $3)
+
 		hash openssl 2>/dev/null
 		hasOpenSSL=$?
 
@@ -68,10 +73,6 @@ function vault {
 		# so we force adding openssl to the PATH during the execution of this script
 		[ -d /usr/local/opt/openssl@1.1/bin ] \
 			&& PATH="/usr/local/opt/openssl@1.1/bin:$PATH"
-
-		if [ -z "$pwd" ]; then
-			pwd=$(read_pwd)
-		fi
 
 		if [ -f "${dir}/.secrets.tar.gz.dat" ] \
 			&& [ "$hasOpenSSL" -eq "0" ] \
@@ -152,7 +153,6 @@ function register {
 #############################################
 
 function link_registered {
-	local pwd="$1"
 	local STORAGE_LOCATION=$(read_dotfile_location)
 	local REGISTER="$STORAGE_LOCATION/register.txt"
 	local STORE="$STORAGE_LOCATION/files"
@@ -183,17 +183,17 @@ function link_registered {
 	done < "$REGISTER"
 
 	# Install secrets
-	if [ -z "$pwd" ]; then
-		pwd=$(read_pwd)
-	fi
+	local pwd=$(read_pwd $1)
   vault $STORAGE_LOCATION decrypt "$pwd"
 
-	echo "Installing SSH Keys"
   if [ -d "${STORAGE_LOCATION}/.secrets/ssh_keys" ]; then
+		echo "Installing ssh keys"
     [ ! -d "$HOME/.ssh" ] && \
 			mkdir -p $HOME/.ssh && \
 			chmod 0750 $HOME/.ssh
     cp $STORAGE_LOCATION/.secrets/ssh_keys/* $HOME/.ssh/
+	else
+		echo "No ssh keys found to install"
   fi
 
   vault $STORAGE_LOCATION encrypt "$pwd"
