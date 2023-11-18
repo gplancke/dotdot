@@ -183,21 +183,23 @@ function link_registered {
 	done < "$REGISTER"
 
 	# Install secrets
-	local pwd=$(read_pwd $1)
-  vault $STORAGE_LOCATION decrypt "$pwd"
+	if [ -f "${STORAGE_LOCATION}/.secrets.tar.gz.dat" ]; then
+		local pwd=$(read_pwd $1)
+		vault $STORAGE_LOCATION decrypt "$pwd"
 
-  if [ -d "${STORAGE_LOCATION}/.secrets/ssh_keys" ]; then
-		echo "Installing ssh keys"
-    [ ! -d "$HOME/.ssh" ] && \
-			mkdir -p $HOME/.ssh && \
-			chmod 0750 $HOME/.ssh
-    cp $STORAGE_LOCATION/.secrets/ssh_keys/* $HOME/.ssh/
-	else
-		echo "No ssh keys found to install"
-  fi
+		if [ -d "${STORAGE_LOCATION}/.secrets/ssh_keys" ]; then
+			echo "Installing ssh keys"
+			[ ! -d "$HOME/.ssh" ] && \
+				mkdir -p $HOME/.ssh && \
+				chmod 0750 $HOME/.ssh
+			cp $STORAGE_LOCATION/.secrets/ssh_keys/* $HOME/.ssh/
+		else
+			echo "No ssh keys found to install"
+		fi
 
-  vault $STORAGE_LOCATION encrypt "$pwd"
-  vault $STORAGE_LOCATION ignore
+		vault $STORAGE_LOCATION encrypt "$pwd"
+		vault $STORAGE_LOCATION ignore
+	fi
 }
 
 #############################################
