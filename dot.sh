@@ -30,6 +30,12 @@ function read_dotfile_location {
 function expand_read_line {
 	echo "$(eval echo $1)"
 }
+function save_git {
+	local dir="$1"
+	if [ -d "$dir" ] && [ -d "$dir/.git" ]; then
+		(cd "$dir" && git add . && git commit -m "dotfiles update" && git push)
+	fi
+}
 
 #############################################
 # This function is used to encrypt/decrypt
@@ -145,6 +151,8 @@ function register {
 		echo $infoLine >> "$REGISTER"
 		# Nice and done
 		echo "Registered $fileToTrack"
+		# Save to GIT
+		save_git "$STORAGE_LOCATION"
 	fi
 }
 
@@ -235,6 +243,9 @@ function save_registered {
 			cp -r "$src" "$STORE"
 		fi
 	done < "$REGISTER"
+
+	# Save to GIT
+	save_git "$STORAGE_LOCATION"
 }
 
 function printHelp {
