@@ -238,10 +238,9 @@ function save_registered {
 
 		if [ -f "$target" ] || [ -d "$target" ]; then
 			rm -rf "$target"
-		else
-			echo "Saving $src to $STORE"
-			cp -r "$src" "$STORE"
 		fi
+		echo "Saving $src to $STORE"
+		cp -r "$src" "$STORE"
 	done < "$REGISTER"
 
 	# Save to GIT
