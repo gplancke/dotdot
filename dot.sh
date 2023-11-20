@@ -1,5 +1,10 @@
 #!/bin/bash
 
+#
+# TODO Deal with Errors on Vault operations
+# TODO Find a way to deal with the password
+#
+
 HERE="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 
 DELIM="|"
@@ -12,11 +17,12 @@ function read_pwd {
 	if [ -n "$maybePwd" ]; then
 		echo "$maybePwd"
 	else
-		stty -echo
-		printf "Password: "
-		read PASSWORD
-		stty echo
-		printf "\n"
+		read -sp "Enter password: " PASSWORD
+		# echo "Password: "
+		# stty -echo
+		# read PASSWORD
+		# stty echo
+		# printf "\n"
 
 		echo $PASSWORD
 	fi
@@ -61,12 +67,13 @@ function vault {
 			&& [ "$hasOpenSSL" -eq "0" ] \
 			&& [ -n "${pwd}" ]; then
 
-			echo "Encrypting secrets"
+			(cd "$dir" && echo "$pwd" > ./.pass)
+			local encrypted=$(cd "$dir" && tar cvz ./.secrets | openssl enc -pbkdf2 -salt -pass file:./.pass > .secrets.tar.gz.dat && echo "1" || echo "0")
+			(cd "$dir" && rm -rf ./.pass; rm -rf ./.secrets)
 
-			(cd "$dir" \
-				&& tar cvz ./.secrets \
-				| openssl enc -pbkdf2 -salt -pass file:./.pass > .secrets.tar.gz.dat \
-				&& rm -rf ./.secrets)
+			echo "$encrypted"
+		else
+			echo "0"
 		fi
 
 	elif [ "$op" = "decrypt" ]; then
@@ -84,32 +91,33 @@ function vault {
 			&& [ "$hasOpenSSL" -eq "0" ] \
 			&& [ -n "${pwd}" ]; then
 
-			echo "Decrypting secrets"
+			(cd "$dir" && echo "$pwd" > ./.pass)
+			local decrypted=$(cd "$dir" && openssl enc -pbkdf2 -d -pass file:./.pass -in ./.secrets.tar.gz.dat | tar xvzf - && echo "1" || echo "0")
+			(cd "$dir" && rm -rf ./.pass; rm -rf ./.secrets.tar.gz.dat)
 
-			(cd "$dir" \
-				&& echo "$(pwd)" \
-				&& openssl enc -pbkdf2 -d -pass file:./.pass -in ./.secrets.tar.gz.dat \
-				| tar xvzf - && rm -rf ./.secrets.tar.gz.dat)
+			echo "$decrypted"
+		else
+			echo "0"
 		fi
 	elif [ "$op" = "ignore" ]; then
-			hash git 2>/dev/null
-			hasGit=$?
+		hash git 2>/dev/null
+		hasGit=$?
 
-			if [ "$hasGit" -eq "0" ] \
-			 && [ -f "${dir}/.secrets.tar.gz.dat" ]; then
-				git checkout "$dir/.secrets.tar.gz.dat"
-			fi
+		if [ "$hasGit" -eq "0" ] \
+		 && [ -f "${dir}/.secrets.tar.gz.dat" ]; then
+			(cd $dir && git checkout ".secrets.tar.gz.dat")
+		fi
+		echo "1"
 	else
-		echo "Unknown operation"
+		echo "0"
 	fi
 }
 
 #############################################
-# This function to register a dotfile
+# This function save the location of dotfiles
 #############################################
 
-function register {
-	# First we check if we have info about where to store the registered files
+function ensure_dotfile_location {
 	if [ ! -f "$DOTFILE_LOCATION" ]; then
 		mkdir -p "$(dirname "$DOTFILE_LOCATION")"
 		touch "$DOTFILE_LOCATION"
@@ -123,57 +131,59 @@ function register {
 		write_dotfile_location $STORAGE_LOCATION
 	fi
 
-	STORE="$STORAGE_LOCATION/files"
-	REGISTER="$STORAGE_LOCATION/register.txt"
-
-	echo "Registering files in $STORE"
-	mkdir -p $STORE
-	touch "$REGISTER"
-
-	local file="$1"
-	local realFileToTrack=$(readlink -f $file)
-	local fileToTrack="${realFileToTrack//$HOME\/}"
-
-	if [ "$realFileToTrack" = "$fileToTrack" ]; then
-		echo "File is not in home directory, cannot track it"
-	else
-		local srcDirName="$(dirname $fileToTrack)"
-		local srcFileName="$(basename $fileToTrack)"
-		local infoLine="${srcFileName}${DELIM}${srcDirName}"
-		# local isHidden=$([[ "$srcFileName" =~ ^\\\. ]] && echo "1" || echo "0")
-		# local visibleName=$([ "$isHidden" = "1" ] && echo "${srcFileName:1}" || echo "$srcFileName")
-		local sedSafe=$(echo "$srcFileName" | sed -E -e 's/\./\\./g')
-
-		# Copying file to store
-		cp -r $realFileToTrack $STORE
-		# Removing duplicates from register before adding
-		sed -i '' -E -e "/^${sedSafe}/d" $REGISTER
-		echo $infoLine >> "$REGISTER"
-		# Nice and done
-		echo "Registered $fileToTrack"
-		# Save to GIT
-		save_git "$STORAGE_LOCATION"
-	fi
+	echo "$STORAGE_LOCATION"
 }
 
 #############################################
-# This function restore the registered files
+# Track a file in the register and copy it to the store
 #############################################
 
-function link_registered {
-	local STORAGE_LOCATION=$(read_dotfile_location)
-	local REGISTER="$STORAGE_LOCATION/register.txt"
-	local STORE="$STORAGE_LOCATION/files"
+function register {
+	local REGISTER="$1"
+	local STORE="$2"
+	local fileToTrack="$3"
+	local srcDirName="$(dirname $fileToTrack)"
+	local srcFileName="$(basename $fileToTrack)"
+	local infoLine="${srcFileName}${DELIM}${srcDirName}"
+	# local isHidden=$([[ "$srcFileName" =~ ^\\\. ]] && echo "1" || echo "0")
+	# local visibleName=$([ "$isHidden" = "1" ] && echo "${srcFileName:1}" || echo "$srcFileName")
+	local sedSafe=$(echo "$srcFileName" | sed -E -e 's/\./\\./g')
 
-	if [ ! -f "$REGISTER" ]; then
-		echo "No register file found"
-		exit 1
-	fi
+	# Copying file to store
+	cp -r $realFileToTrack $STORE
+	# Removing duplicates from register before adding
+	sed -i '' -E -e "/^${sedSafe}/d" $REGISTER
+	echo $infoLine >> "$REGISTER"
+}
 
-	if [ ! -d "$STORE" ]; then
-		echo "No registered files found"
-		exit 1
-	fi
+#############################################
+# Untrack a file in the register and remove it from the store
+#############################################
+
+function unregister {
+	local REGISTER="$1"
+	local STORE="$2"
+	local fileToTrack="$3"
+	local srcDirName="$(dirname $fileToTrack)"
+	local srcFileName="$(basename $fileToTrack)"
+	local infoLine="${srcFileName}${DELIM}${srcDirName}"
+	# local isHidden=$([[ "$srcFileName" =~ ^\\\. ]] && echo "1" || echo "0")
+	# local visibleName=$([ "$isHidden" = "1" ] && echo "${srcFileName:1}" || echo "$srcFileName")
+	local sedSafe=$(echo "$srcFileName" | sed -E -e 's/\./\\./g')
+
+	# Removing file from store
+	rm -rf $STORE/$srcFileName
+	sed -i '' -E -e "/^${sedSafe}/d" $REGISTER
+}
+
+#############################################
+# Given a register file, copy the files in the STORE
+# to the system
+#############################################
+
+function link {
+	local REGISTER="$1"
+	local STORE="$2"
 
 	while read -r line; do
 		local arg1=$(echo "$line" | cut -d "$DELIM" -f1)
@@ -189,45 +199,16 @@ function link_registered {
 			cp -r "$src" "$target"
 		fi
 	done < "$REGISTER"
-
-	# Install secrets
-	if [ -f "${STORAGE_LOCATION}/.secrets.tar.gz.dat" ]; then
-		local pwd=$(read_pwd $1)
-		vault $STORAGE_LOCATION decrypt "$pwd"
-
-		if [ -d "${STORAGE_LOCATION}/.secrets/ssh_keys" ]; then
-			echo "Installing ssh keys"
-			[ ! -d "$HOME/.ssh" ] && \
-				mkdir -p $HOME/.ssh && \
-				chmod 0750 $HOME/.ssh
-			cp $STORAGE_LOCATION/.secrets/ssh_keys/* $HOME/.ssh/
-		else
-			echo "No ssh keys found to install"
-		fi
-
-		vault $STORAGE_LOCATION encrypt "$pwd"
-		vault $STORAGE_LOCATION ignore
-	fi
 }
 
 #############################################
-# This function to save the registered files
+# Given a register, update the files in the store
+# with the files in the system
 #############################################
 
-function save_registered {
-	STORAGE_LOCATION=$(read_dotfile_location)
-	REGISTER="$STORAGE_LOCATION/register.txt"
-	STORE="$STORAGE_LOCATION/files"
-
-	if [ ! -f "$REGISTER" ]; then
-		echo "No register file found"
-		exit 1
-	fi
-
-	if [ ! -d "$STORE" ]; then
-		echo "No registered files found"
-		exit 1
-	fi
+function save {
+	local REGISTER="$1"
+	local STORE="$2"
 
 	while read -r line; do
 		local arg1=$(echo "$line" | cut -d "$DELIM" -f1)
@@ -243,6 +224,188 @@ function save_registered {
 		cp -r "$src" "$STORE"
 	done < "$REGISTER"
 
+}
+
+#############################################
+# This function to register a dotfile publicly
+#############################################
+
+function register_public {
+	local STORAGE_LOCATION=$(ensure_dotfile_location)
+	local FILE_STORE="$STORAGE_LOCATION/files"
+	local FILE_REGISTER="$STORAGE_LOCATION/register.txt"
+
+	mkdir -p $FILE_STORE
+	touch "$FILE_REGISTER"
+
+	local file="$1"
+	local realFileToTrack=$(readlink -f $file)
+	local fileToTrack="${realFileToTrack//$HOME\/}"
+
+	if [ "$realFileToTrack" = "$fileToTrack" ]; then
+		echo "File is not in home directory, cannot track it"
+	else
+		register "$FILE_REGISTER" "$FILE_STORE" "$fileToTrack"
+		# Save to GIT
+		save_git "$STORAGE_LOCATION"
+	fi
+}
+
+#############################################
+# This function to register a dotfile secretly
+#############################################
+
+function register_secret {
+	local STORAGE_LOCATION=$(ensure_dotfile_location)
+	local SECRETS_STORE="$STORAGE_LOCATION/.secrets"
+	local SECRETS_REGISTER="$STORAGE_LOCATION/secrets.txt"
+	local SECRETS_VAULT="$STORAGE_LOCATION/.secrets.tar.gz.dat"
+
+	touch "$SECRETS_REGISTER"
+
+	local file="$1"
+	local pwd=$(read_pwd $2)
+	local realFileToTrack=$(readlink -f $file)
+	local fileToTrack="${realFileToTrack//$HOME\/}"
+
+	if [ "$realFileToTrack" = "$fileToTrack" ]; then
+		echo "File is not in home directory, cannot track it"
+	else
+		if [ -f "$SECRETS_VAULT" ]; then
+			local decrypted=$(vault $STORAGE_LOCATION decrypt "$pwd")
+			[ "$decrypted" = "0" ] && exit 1
+		else
+			mkdir -p $SECRETS_STORE
+		fi
+
+		register "$SECRETS_REGISTER" "$SECRETS_STORE" "$fileToTrack"
+		local encrypted=$(vault $STORAGE_LOCATION encrypt "$pwd")
+		[ "$encrypted" = "1" ] && save_git "$STORAGE_LOCATION"
+	fi
+
+}
+
+#############################################
+# This function to unregister a dotfile publicly
+#############################################
+
+function unregister_public {
+	local STORAGE_LOCATION=$(ensure_dotfile_location)
+	local FILE_STORE="$STORAGE_LOCATION/files"
+	local FILE_REGISTER="$STORAGE_LOCATION/register.txt"
+
+	mkdir -p $FILE_STORE
+	touch "$FILE_REGISTER"
+
+	local file="$1"
+	local realFileToTrack=$(readlink -f $file)
+	local fileToTrack="${realFileToTrack//$HOME\/}"
+
+	if [ "$realFileToTrack" = "$fileToTrack" ]; then
+		echo "File is not in home directory, cannot track it"
+	else
+		unregister "$FILE_REGISTER" "$FILE_STORE" "$fileToTrack"
+		# Save to GIT
+		save_git "$STORAGE_LOCATION"
+	fi
+}
+
+#############################################
+# This function to register a dotfile secretly
+#############################################
+
+function unregister_secret {
+	local STORAGE_LOCATION=$(ensure_dotfile_location)
+	local SECRETS_STORE="$STORAGE_LOCATION/.secrets"
+	local SECRETS_REGISTER="$STORAGE_LOCATION/secrets.txt"
+	local SECRETS_VAULT="$STORAGE_LOCATION/.secrets.tar.gz.dat"
+
+	touch "$SECRETS_REGISTER"
+
+	local file="$1"
+	local pwd=$(read_pwd $2)
+	local realFileToTrack=$(readlink -f $file)
+	local fileToTrack="${realFileToTrack//$HOME\/}"
+
+	if [ "$realFileToTrack" = "$fileToTrack" ]; then
+		echo "File is not in home directory, cannot track it"
+	else
+		if [ -f "$SECRETS_VAULT" ]; then
+			local decrypted=$(vault $STORAGE_LOCATION decrypt "$pwd")
+			[ "$decrypted" = "0" ] && exit 1
+		else
+			mkdir -p $SECRETS_STORE
+		fi
+
+		unregister "$SECRETS_REGISTER" "$SECRETS_STORE" "$fileToTrack"
+		local encrypted=$(vault $STORAGE_LOCATION encrypt "$pwd")
+		[ "$encrypted" = "1" ] && save_git "$STORAGE_LOCATION"
+	fi
+
+}
+#############################################
+# This function restore the registered files
+#############################################
+
+function link_registered {
+	local STORAGE_LOCATION=$(read_dotfile_location)
+	local FILE_REGISTER="$STORAGE_LOCATION/register.txt"
+	local FILE_STORE="$STORAGE_LOCATION/files"
+	local SECRETS_REGISTER="$STORAGE_LOCATION/secrets.txt"
+	local SECRETS_STORE="$STORAGE_LOCATION/.secrets"
+	local SECRETS_VAULT="$STORAGE_LOCATION/.secrets.tar.gz.dat"
+
+	if [ -f "${SECRETS_VAULT}" ] && [ -f "${SECRETS_REGISTER}" ]; then
+		local pwd=$(read_pwd $1)
+		local decrypted=$(vault $STORAGE_LOCATION decrypt "$pwd")
+		[ "$decrypted" = "0" ] && exit 1
+
+		link "$SECRETS_REGISTER" "$SECRETS_STORE"
+
+		local encrypted=$(vault $STORAGE_LOCATION encrypt "$pwd")
+		local ignored=$(vault $STORAGE_LOCATION ignore)
+	fi
+
+	if [ -f "$FILE_REGISTER" ] && [ -d "$FILE_STORE" ]; then
+		link "$FILE_REGISTER" "$FILE_STORE"
+	fi
+}
+
+#############################################
+# This function to save the registered files
+#############################################
+
+function save_registered {
+	local STORAGE_LOCATION=$(read_dotfile_location)
+	local FILE_REGISTER="$STORAGE_LOCATION/register.txt"
+	local FILE_STORE="$STORAGE_LOCATION/files"
+	local SECRETS_REGISTER="$STORAGE_LOCATION/secrets.txt"
+	local SECRETS_STORE="$STORAGE_LOCATION/.secrets"
+	local SECRETS_VAULT="$STORAGE_LOCATION/.secrets.tar.gz.dat"
+
+	# If some secrets are registered
+	# We save them
+	if [ -f "${SECRETS_REGISTER}" ]; then
+		local pwd=$(read_pwd $1)
+
+		# Check for the vault and either create it or decrypt it
+		if [ -f "${SECRETS_VAULT}" ]; then
+			local decrypted=$(vault $STORAGE_LOCATION decrypt "$pwd")
+			[ "$decrypted" = "0" ] && exit 1
+		else
+			mkdir -p $SECRETS_STORE
+		fi
+
+		save "$SECRETS_REGISTER" "$SECRETS_STORE"
+		local encrypted=$(vault $STORAGE_LOCATION encrypt "$pwd")
+	fi
+
+	# If some regular files are registered
+	# We save them
+	if [ -f "$FILE_REGISTER" ] && [ -d "$FILE_STORE" ]; then
+		save "$FILE_REGISTER" "$FILE_STORE"
+	fi
+
 	# Save to GIT
 	save_git "$STORAGE_LOCATION"
 }
@@ -253,6 +416,7 @@ function printHelp {
   echo "Options for dotfiles mgmt"
   echo ""
   echo "  register <file>: Register a file or directory to be tracked"
+  echo "  secret <file>: Register a secret or directory to be tracked"
   echo "  link: Copy over registered files into the system"
   echo "  save: Save all modifications made to files in the running system back into this repo"
   echo ""
@@ -264,14 +428,35 @@ operation="$1"
 options="$2"
 
 case $operation in
+	encrypt)
+		LOCATION=$(read_dotfile_location)
+		PASS=$(read_pwd $options)
+		ENCRYPTED=$(vault $LOCATION encrypt "$PASS")
+		[ "$ENCRYPTED" = "0" ] && echo "Failed To encrypt" || echo "Encrypted"
+	;;
+	decrypt)
+	  LOCATION=$(read_dotfile_location)
+		PASS=$(read_pwd $options)
+		DECRYPTED=$(vault $LOCATION decrypt "$PASS")
+		[ "$DECRYPTED" = "0" ] && echo "Failed To decrypt" || echo "Decrypted"
+	;;
   register)
-    register $options
+    register_public $options
+    ;;
+  secret)
+    register_secret $options
+    ;;
+  unregister)
+    unregister_public $options
+    ;;
+  unsecret)
+    unregister_secret $options
     ;;
   link)
     link_registered $options
     ;;
   save)
-    save_registered
+    save_registered $options
     ;;
   *)
     printHelp
