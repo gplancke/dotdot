@@ -22,9 +22,9 @@ function read_pwd {
 		# stty -echo
 		# read PASSWORD
 		# stty echo
-		# printf "\n"
+		printf "\n"
 
-		echo $PASSWORD
+		echo $(echo $PASSWORD | tr ' ' '_')
 	fi
 }
 function write_dotfile_location {
@@ -51,6 +51,7 @@ function save_git {
 function vault {
 	local dir="$1"
 	local op="$2"
+	local cwd="$(pwd)"
 
 	if [ "$op" = "encrypt" ]; then
 		local pwd=$(read_pwd $3)
@@ -61,19 +62,26 @@ function vault {
 		# macos ships with libressl and brew does not want to override it
 		# so we force adding openssl to the PATH during the execution of this script
 		[ -d /usr/local/opt/openssl@1.1/bin ] \
-			&& PATH="/usr/local/opt/openssl@1.1/bin:$PATH"
+			&& OPENSSL="/usr/local/opt/openssl@1.1/bin/openssl" \
+			|| OPENSSL="openssl"
+
+		OPENSSL="openssl"
 
 		if [ -d "${dir}/.secrets" ] \
 			&& [ "$hasOpenSSL" -eq "0" ] \
 			&& [ -n "${pwd}" ]; then
 
-			(cd "$dir" && echo "$pwd" > ./.pass)
-			local encrypted=$(cd "$dir" && tar cvz ./.secrets | openssl enc -pbkdf2 -salt -pass file:./.pass > .secrets.tar.gz.dat && echo "1" || echo "0")
-			(cd "$dir" && rm -rf ./.pass; rm -rf ./.secrets)
+			local encrypted=1
 
-			echo "$encrypted"
+			cd "${dir}"
+			tar cvz ./.secrets | $OPENSSL enc -aes-256-ecb -e -salt -pass "pass:'${pwd}'" -out .secrets.tar.gz.dat
+			encrypted=$?
+			[ $encrypted -eq 0 ] && rm -rf ./.secrets || rm -rf ./.secrets.tar.gz.dat
+			cd "${cwd}"
+
+			return $encrypted
 		else
-			echo "0"
+			return 1
 		fi
 
 	elif [ "$op" = "decrypt" ]; then
@@ -85,19 +93,25 @@ function vault {
 		# macos ships with libressl and brew does not want to override it
 		# so we force adding openssl to the PATH during the execution of this script
 		[ -d /usr/local/opt/openssl@1.1/bin ] \
-			&& PATH="/usr/local/opt/openssl@1.1/bin:$PATH"
+			&& OPENSSL="/usr/local/opt/openssl@1.1/bin/openssl" \
+			|| OPENSSL="openssl"
+
+		OPENSSL="openssl"
 
 		if [ -f "${dir}/.secrets.tar.gz.dat" ] \
 			&& [ "$hasOpenSSL" -eq "0" ] \
 			&& [ -n "${pwd}" ]; then
+			local decrypted=1
 
-			(cd "$dir" && echo "$pwd" > ./.pass)
-			local decrypted=$(cd "$dir" && openssl enc -pbkdf2 -d -pass file:./.pass -in ./.secrets.tar.gz.dat | tar xvzf - && echo "1" || echo "0")
-			(cd "$dir" && rm -rf ./.pass; rm -rf ./.secrets.tar.gz.dat)
+			cd "${dir}"
+			$OPENSSL enc -aes-256-ecb -d -pass "pass:'${pwd}'" -in ./.secrets.tar.gz.dat | tar xvzf -
+			decrypted=$?
+			[ $decrypted -eq 0 ] && rm -rf ./.secrets.tar.gz.dat || rm -rf ./.secrets
+			cd "${cwd}"
 
-			echo "$decrypted"
+			return $decrypted
 		else
-			echo "0"
+			return 1
 		fi
 	elif [ "$op" = "ignore" ]; then
 		hash git 2>/dev/null
@@ -107,9 +121,10 @@ function vault {
 		 && [ -f "${dir}/.secrets.tar.gz.dat" ]; then
 			(cd $dir && git checkout ".secrets.tar.gz.dat")
 		fi
-		echo "1"
+
+		return 0
 	else
-		echo "0"
+		return 1
 	fi
 }
 
@@ -272,15 +287,15 @@ function register_secret {
 		echo "File is not in home directory, cannot track it"
 	else
 		if [ -f "$SECRETS_VAULT" ]; then
-			local decrypted=$(vault $STORAGE_LOCATION decrypt "$pwd")
-			[ "$decrypted" = "0" ] && exit 1
+			vault $STORAGE_LOCATION decrypt "$pwd"
+			[ "$?" = "0" ] || exit 1
 		else
 			mkdir -p $SECRETS_STORE
 		fi
 
 		register "$SECRETS_REGISTER" "$SECRETS_STORE" "$fileToTrack"
-		local encrypted=$(vault $STORAGE_LOCATION encrypt "$pwd")
-		[ "$encrypted" = "1" ] && save_git "$STORAGE_LOCATION"
+		vault $STORAGE_LOCATION encrypt "$pwd"
+		[ "$?" = "0" ] && save_git "$STORAGE_LOCATION"
 	fi
 
 }
@@ -331,15 +346,15 @@ function unregister_secret {
 		echo "File is not in home directory, cannot track it"
 	else
 		if [ -f "$SECRETS_VAULT" ]; then
-			local decrypted=$(vault $STORAGE_LOCATION decrypt "$pwd")
-			[ "$decrypted" = "0" ] && exit 1
+			vault $STORAGE_LOCATION decrypt "$pwd"
+			[ "$?" = "0" ] || exit 1
 		else
 			mkdir -p $SECRETS_STORE
 		fi
 
 		unregister "$SECRETS_REGISTER" "$SECRETS_STORE" "$fileToTrack"
-		local encrypted=$(vault $STORAGE_LOCATION encrypt "$pwd")
-		[ "$encrypted" = "1" ] && save_git "$STORAGE_LOCATION"
+		vault $STORAGE_LOCATION encrypt "$pwd"
+		[ "$?" = "0" ] && save_git "$STORAGE_LOCATION"
 	fi
 
 }
@@ -357,13 +372,14 @@ function link_registered {
 
 	if [ -f "${SECRETS_VAULT}" ] && [ -f "${SECRETS_REGISTER}" ]; then
 		local pwd=$(read_pwd $1)
-		local decrypted=$(vault $STORAGE_LOCATION decrypt "$pwd")
-		[ "$decrypted" = "0" ] && exit 1
+		vault $STORAGE_LOCATION decrypt "$pwd"
+		[ "$?" = "0" ] || exit 1
 
 		link "$SECRETS_REGISTER" "$SECRETS_STORE"
 
-		local encrypted=$(vault $STORAGE_LOCATION encrypt "$pwd")
-		local ignored=$(vault $STORAGE_LOCATION ignore)
+		vault $STORAGE_LOCATION encrypt "$pwd"
+		vault $STORAGE_LOCATION ignore
+		[ "$?" = "0" ] || exit 1
 	fi
 
 	if [ -f "$FILE_REGISTER" ] && [ -d "$FILE_STORE" ]; then
@@ -390,14 +406,15 @@ function save_registered {
 
 		# Check for the vault and either create it or decrypt it
 		if [ -f "${SECRETS_VAULT}" ]; then
-			local decrypted=$(vault $STORAGE_LOCATION decrypt "$pwd")
-			[ "$decrypted" = "0" ] && exit 1
+			vault $STORAGE_LOCATION decrypt "$pwd"
+			[ "$?" = "0" ] || exit 1
 		else
 			mkdir -p $SECRETS_STORE
 		fi
 
 		save "$SECRETS_REGISTER" "$SECRETS_STORE"
-		local encrypted=$(vault $STORAGE_LOCATION encrypt "$pwd")
+		vault $STORAGE_LOCATION encrypt "$pwd"
+		[ "$?" = "0" ] || exit 1
 	fi
 
 	# If some regular files are registered
@@ -431,14 +448,14 @@ case $operation in
 	encrypt)
 		LOCATION=$(read_dotfile_location)
 		PASS=$(read_pwd $options)
-		ENCRYPTED=$(vault $LOCATION encrypt "$PASS")
-		[ "$ENCRYPTED" = "0" ] && echo "Failed To encrypt" || echo "Encrypted"
+		vault $LOCATION encrypt "$PASS"
+		[ "$?" = "0" ] && echo "Encrypted" || echo "Failed To encrypt"
 	;;
 	decrypt)
 	  LOCATION=$(read_dotfile_location)
 		PASS=$(read_pwd $options)
-		DECRYPTED=$(vault $LOCATION decrypt "$PASS")
-		[ "$DECRYPTED" = "0" ] && echo "Failed To decrypt" || echo "Decrypted"
+		vault $LOCATION decrypt "$PASS"
+		[ "$?" = "0" ] && echo "Decrypted" || echo "Failed To decrypt"
 	;;
   register)
     register_public $options
